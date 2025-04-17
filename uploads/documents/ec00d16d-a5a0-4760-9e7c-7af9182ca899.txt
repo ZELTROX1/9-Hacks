@@ -1,0 +1,52 @@
+Hospital Name: CityCare Hospital
+Address: 123 Health Street, Newtown
+Phone: +91-12345-67890
+
+Patient Name: John Doe
+Age: 45 years
+Gender: Male
+Date: 17-Apr-2025
+
+Clinical Findings:
+
+Cough with sputum
+
+Fever for 4 days
+
+Shortness of breath
+
+Chest pain on the left side
+
+Investigations:
+
+Chest X-ray: Left lower lobe consolidation suggestive of pneumonia.
+
+Diagnosis:
+Community-Acquired Pneumonia (CAP) – Left lower lobe
+
+Prescription:
+
+Amoxicillin-Clavulanate 625 mg – 1 tablet thrice a day for 7 days
+
+Azithromycin 500 mg – 1 tablet once daily for 3 days
+
+Paracetamol 500 mg – 1 tablet every 6 hours as needed for fever
+
+Cough Syrup (Ambroxol + Guaifenesin) – 10 ml thrice daily
+
+Steam Inhalation – Twice a day
+
+Plenty of fluids and rest
+
+Follow-up:
+
+Review after 5 days or earlier if symptoms worsen.
+
+Repeat chest X-ray after 7 days if no improvement.
+
+Doctor's Name: Dr. Rohan Mehta
+Qualification: MBBS, MD (Pulmonology)
+Registration No.: 9876543210
+
+Signature: ____________
+
