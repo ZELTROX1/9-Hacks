@@ -117,18 +117,51 @@
 
     messageInput.value = '';
 
-    // Optional: Bot reply
-    setTimeout(() => {
-      const botDiv = document.createElement('div');
-      botDiv.classList.add('message', 'assistant');
-      botDiv.innerHTML = `
-        <div class="avatar">A</div>
-        <div class="message-content">You said: "${message}"</div>
-      `;
-      messagesContainer.appendChild(botDiv);
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }, 800);
+    // Send prompt to Flask API and receive response
+    sendPromptToAPI(message);
   });
+
+  async function sendPromptToAPI(prompt) {
+    const apiUrl = 'http://localhost:5000/api/chat';  // Flask API endpoint
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ prompt: prompt })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to fetch AI response');
+    }
+
+    const data = await response.json();
+    const apiResponse = data.response || "No response received.";
+
+    // Clean up the response
+    const cleanedResponse = apiResponse.replace(/\n+/g, '\n').trim();
+
+    // Display bot's reply
+    const botDiv = document.createElement('div');
+    botDiv.classList.add('message', 'assistant');
+    botDiv.innerHTML = `
+      <div class="avatar">A</div>
+      <div class="message-content">${cleanedResponse}</div>
+    `;
+    messagesContainer.appendChild(botDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
+
+  // Logout functionality
+  async function logout() {
+    try {
+      await firebase.auth().signOut();
+      window.location.href = "login.html";  // Redirect to login page after logout
+    } catch (error) {
+      console.error("Error logging out: ", error);
+      alert('Error logging out: ' + error.message);
+    }
+  }
 </script>
 
 </body>
