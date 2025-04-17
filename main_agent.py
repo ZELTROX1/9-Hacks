@@ -2,11 +2,17 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from langchain_groq import ChatGroq
+from langchain.vectorstores import FAISS
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import RetrievalQA
+from langchain.document_loaders import PyPDFLoader, TextLoader
 from pydantic import BaseModel
 from typing import Optional, List
 import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -29,6 +35,8 @@ app.add_middleware(
 # Initialize global variables
 medical_agent = None
 general_llm = None
+embeddings = None
+vector_stores = {}  # Dictionary to store multiple vector databases
 
 # Response models
 class ChatResponse(BaseModel):
@@ -37,10 +45,18 @@ class ChatResponse(BaseModel):
 class MedicalResponse(BaseModel):
     analysis: str
 
+class VectorDBResponse(BaseModel):
+    db_id: str
+    message: str
+
+class QueryResponse(BaseModel):
+    answer: str
+    source_documents: List[dict]
+
 # Initialize the medical agent and general chatbot
 @app.on_event("startup")
 async def startup_event():
-    global medical_agent, general_llm
+    global medical_agent, general_llm, embeddings
     
     # Initialize Medical Agent
     medical_agent = MedicalAgent()
@@ -55,6 +71,12 @@ async def startup_event():
         model_name="llama3-70b-8192",
         temperature=0.3,
         max_tokens=512
+    )
+    
+    # Initialize embeddings for vector database
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={'device': 'cpu'}
     )
 
 # General chatbot endpoint
@@ -121,6 +143,151 @@ async def medical_analysis(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Create vector database endpoint
+@app.post("/api/create-vectordb", response_model=VectorDBResponse)
+async def create_vector_db(
+    documents: List[UploadFile] = File(...),
+    db_name: Optional[str] = Form(None)
+):
+    """Create a vector database from uploaded documents"""
+    try:
+        # Generate a unique ID for the database if name not provided
+        db_id = db_name if db_name else str(uuid.uuid4())[:8]
+        
+        if db_id in vector_stores:
+            raise HTTPException(status_code=400, detail=f"Database with ID {db_id} already exists")
+        
+        # Create temporary directory for files
+        with tempfile.TemporaryDirectory() as temp_dir:
+            all_documents = []
+            
+            # Process each uploaded document
+            for doc in documents:
+                file_path = Path(temp_dir) / doc.filename
+                with open(file_path, "wb") as buffer:
+                    shutil.copyfileobj(doc.file, buffer)
+                
+                # Load document based on file type
+                if doc.content_type == "application/pdf":
+                    loader = PyPDFLoader(str(file_path))
+                elif doc.content_type == "text/plain":
+                    loader = TextLoader(str(file_path))
+                else:
+                    raise HTTPException(status_code=400, detail=f"Unsupported document type: {doc.content_type}")
+                
+                docs = loader.load()
+                all_documents.extend(docs)
+            
+            # Split documents into chunks
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+                length_function=len,
+            )
+            split_docs = text_splitter.split_documents(all_documents)
+            
+            # Create vector store
+            vectorstore = FAISS.from_documents(split_docs, embeddings)
+            vector_stores[db_id] = vectorstore
+            
+            # Save the vector store to disk (optional)
+            db_path = f"vectorstores/{db_id}"
+            os.makedirs(db_path, exist_ok=True)
+            vectorstore.save_local(db_path)
+            
+            return {
+                "db_id": db_id,
+                "message": f"Vector database created successfully with {len(split_docs)} chunks"
+            }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Query vector database endpoint
+@app.post("/api/query-vectordb/{db_id}", response_model=QueryResponse)
+async def query_vector_db(
+    db_id: str,
+    query: str = Form(...)
+):
+    """Query a specific vector database"""
+    try:
+        if db_id not in vector_stores:
+            # Try to load from disk if not in memory
+            db_path = f"vectorstores/{db_id}"
+            if os.path.exists(db_path):
+                vectorstore = FAISS.load_local(db_path, embeddings)
+                vector_stores[db_id] = vectorstore
+            else:
+                raise HTTPException(status_code=404, detail=f"Vector database with ID {db_id} not found")
+        
+        vectorstore = vector_stores[db_id]
+        
+        # Create a retrieval chain
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=general_llm,
+            chain_type="stuff",
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
+            return_source_documents=True
+        )
+        
+        # Query the vector store
+        result = qa_chain({"query": query})
+        
+        # Format source documents
+        source_docs = []
+        for doc in result.get("source_documents", []):
+            source_docs.append({
+                "content": doc.page_content,
+                "metadata": doc.metadata
+            })
+        
+        return {
+            "answer": result["result"],
+            "source_documents": source_docs
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# List available vector databases
+@app.get("/api/list-vectordbs")
+async def list_vector_dbs():
+    """List all available vector databases"""
+    try:
+        # Check both in-memory and on-disk databases
+        memory_dbs = list(vector_stores.keys())
+        
+        # Check disk storage
+        disk_dbs = []
+        if os.path.exists("vectorstores"):
+            disk_dbs = [d for d in os.listdir("vectorstores") if os.path.isdir(os.path.join("vectorstores", d))]
+        
+        all_dbs = list(set(memory_dbs + disk_dbs))
+        
+        return {"databases": all_dbs}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Delete vector database endpoint
+@app.delete("/api/delete-vectordb/{db_id}")
+async def delete_vector_db(db_id: str):
+    """Delete a specific vector database"""
+    try:
+        # Remove from memory
+        if db_id in vector_stores:
+            del vector_stores[db_id]
+        
+        # Remove from disk
+        db_path = f"vectorstores/{db_id}"
+        if os.path.exists(db_path):
+            shutil.rmtree(db_path)
+        
+        return {"message": f"Vector database {db_id} deleted successfully"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
@@ -128,10 +295,12 @@ async def health_check():
     health_status = {
         "status": "healthy",
         "medical_agent": bool(medical_agent),
-        "general_llm": bool(general_llm)
+        "general_llm": bool(general_llm),
+        "embeddings": bool(embeddings),
+        "vector_dbs": len(vector_stores)
     }
     
-    if not health_status["medical_agent"] or not health_status["general_llm"]:
+    if not health_status["medical_agent"] or not health_status["general_llm"] or not health_status["embeddings"]:
         health_status["status"] = "unhealthy"
         
     return health_status
