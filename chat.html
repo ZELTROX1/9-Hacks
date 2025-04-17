@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat Page</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://www.gstatic.com/firebasejs/9.6.11/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.11/firebase-auth-compat.js"></script>
+  <script src="auth.js"></script>
+</head>
+<body>
+
+<div class="app-container">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <button class="new-chat-btn" id="newChatBtn">+ New Chat</button>
+
+    <div class="chat-history" id="chatHistory">
+      <!-- Previous chats will appear here -->
+    </div>
+
+    <button id="logoutBtn" class="logout-btn">Logout</button>
+  </div>
+
+  <!-- Chat Container -->
+  <div class="chat-container">
+    <div class="messages" id="messages" style="display: flex;">
+      <div class="welcome-content" id="welcomeContent">
+        <h1>What can I help with?</h1>
+      </div>
+    </div>
+
+    <!-- Chat Input -->
+    <form class="chat-input-form" id="chatForm">
+      <div class="input-wrapper">
+        <input type="text" id="messageInput" placeholder="Type your message..." autocomplete="off" />
+        <button type="submit" id="sendBtn">Send</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  // Firebase auth check
+  firebase.auth().onAuthStateChanged(function(user) {
+    if (!user) {
+      window.location.href = "login.html";
+    }
+  });
+
+  document.getElementById("logoutBtn").addEventListener("click", function() {
+    logout();
+  });
+
+  // Chat related
+  const newChatBtn = document.getElementById('newChatBtn');
+  const chatHistory = document.getElementById('chatHistory');
+  const messagesContainer = document.getElementById('messages');
+  const chatForm = document.getElementById('chatForm');
+  const messageInput = document.getElementById('messageInput');
+  const welcomeContent = document.getElementById('welcomeContent');
+
+  let currentChatId = null;
+  let chatCounter = 1;
+
+  // Create New Chat
+  newChatBtn.addEventListener('click', () => {
+    const chatItem = document.createElement('div');
+    chatItem.classList.add('chat-item');
+    chatItem.textContent = `Chat ${chatCounter++}`;
+    chatItem.dataset.chatId = Date.now();
+    chatHistory.appendChild(chatItem);
+
+    chatItem.addEventListener('click', () => {
+      switchChat(chatItem.dataset.chatId);
+    });
+
+    // Switch to the new chat automatically
+    switchChat(chatItem.dataset.chatId);
+  });
+
+  function switchChat(chatId) {
+    currentChatId = chatId;
+    messagesContainer.innerHTML = '';
+    const welcomeDiv = document.createElement('div');
+    welcomeDiv.classList.add('welcome-content');
+    welcomeDiv.innerHTML = `<h1>Start your conversation...</h1>`;
+    messagesContainer.appendChild(welcomeDiv);
+  }
+
+  // Send Message
+  chatForm.addEventListener('submit', function(e) {
+    e.preventDefault();
+    const message = messageInput.value.trim();
+    if (message === '') return;
+
+    // Remove welcome if there
+    if (welcomeContent) {
+      welcomeContent.style.display = 'none';
+    }
+    const existingWelcome = document.querySelector('.welcome-content');
+    if (existingWelcome) {
+      existingWelcome.remove();
+    }
+
+    // Create message bubble
+    const messageDiv = document.createElement('div');
+    messageDiv.classList.add('message', 'user');
+    messageDiv.innerHTML = `
+      <div class="avatar">U</div>
+      <div class="message-content">${message}</div>
+    `;
+    messagesContainer.appendChild(messageDiv);
+
+    messagesContainer.scrollTop = messagesContainer.scrollHeight; // Auto-scroll
+
+    messageInput.value = '';
+
+    // Optional: Bot reply
+    setTimeout(() => {
+      const botDiv = document.createElement('div');
+      botDiv.classList.add('message', 'assistant');
+      botDiv.innerHTML = `
+        <div class="avatar">A</div>
+        <div class="message-content">You said: "${message}"</div>
+      `;
+      messagesContainer.appendChild(botDiv);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }, 800);
+  });
+</script>
+
+</body>
+</html>
