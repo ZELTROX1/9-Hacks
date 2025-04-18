@@ -43,7 +43,7 @@ class MedicalAgent:
         # Create prompt template
         self.medical_prompt = PromptTemplate(
             input_variables=["query", "medical_context", "bert_insights", "xray_analysis"],
-            template="""You are a specialized medical licensed physician informative agent.
+            template="""You are a specialized medical informative agent.
 
 MEDICAL QUERY: {query}
 

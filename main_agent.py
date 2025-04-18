@@ -15,6 +15,7 @@ import tempfile
 import uuid
 from pathlib import Path
 from dotenv import load_dotenv
+from medical_agent.ocr import process_document_with_ocr
 
 # Import the MedicalAgent class
 from medical_agent.med import MedicalAgent
@@ -169,7 +170,7 @@ async def create_vector_db(
                 
                 # Load document based on file type
                 if doc.content_type == "application/pdf":
-                    loader = PyPDFLoader(str(file_path))
+                    loader = process_document_with_ocr(str(file_path))
                 elif doc.content_type == "text/plain":
                     loader = TextLoader(str(file_path))
                 else:
