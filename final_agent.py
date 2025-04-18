@@ -16,8 +16,8 @@ import uuid
 import numpy as np
 from pathlib import Path
 from dotenv import load_dotenv
-
 from langchain.schema import Document
+
 
 # Import the MedicalAgent class
 from medical_agent.med import MedicalAgent
@@ -71,95 +71,248 @@ class ManagerAgent:
         self.llm = llm
         self.embeddings = embeddings
         
+    def load_all_databases(self):
+        """Load all available databases from disk if not already in memory"""
+        loaded_dbs = []
+        
+        if os.path.exists("vectorstores"):
+            disk_dbs = [d for d in os.listdir("vectorstores") if os.path.isdir(os.path.join("vectorstores", d))]
+            
+            for db_id in disk_dbs:
+                if db_id not in vector_stores:
+                    try:
+                        db_path = f"vectorstores/{db_id}"
+                        vectorstore = FAISS.load_local(db_path, self.embeddings)
+                        vector_stores[db_id] = vectorstore
+                        
+                        # Load metadata if available
+                        metadata_path = f"{db_path}/metadata.json"
+                        if os.path.exists(metadata_path):
+                            with open(metadata_path, "r") as f:
+                                import json
+                                db_metadata[db_id] = json.load(f)
+                        
+                        loaded_dbs.append(db_id)
+                    except Exception as e:
+                        print(f"Error loading database {db_id}: {str(e)}")
+                        continue
+        
+        return loaded_dbs
+    
     def get_embedding(self, text):
         """Get embedding for a piece of text"""
         return self.embeddings.embed_query(text)
     
-    def calculate_similarity(self, query_embedding, db_id, sample_size=5):
-        """Calculate similarity between query and database documents"""
+    def calculate_relevance(self, query, db_id, k=5):
+        """Calculate relevance score between query and database documents"""
         if db_id not in vector_stores:
-            return 0
+            return 0, []
         
-        vectorstore = vector_stores[db_id]
-        # Get a sample of documents from the database to compare with
-        docs_with_scores = vectorstore.similarity_search_with_score(
-            query="", k=sample_size  # Empty query to get random samples
-        )
-        
+        try:
+            vectorstore = vector_stores[db_id]
+            # Get directly relevant documents based on the query
+            docs_with_scores = vectorstore.similarity_search_with_score(query, k=k)
+            
+            if not docs_with_scores:
+                return 0, []
+            
+            # Get the actual documents and their scores
+            retrieved_docs = [(doc, score) for doc, score in docs_with_scores]
+            
+            # Calculate average similarity score and normalize
+            scores = [score for _, score in docs_with_scores]
+            avg_score = sum(scores) / len(scores)
+            
+            # For distance-based similarity: lower is better, so convert to similarity
+            normalized_score = max(0, 1.0 - (avg_score / 2.0))
+            
+            return normalized_score, retrieved_docs
+        except Exception as e:
+            print(f"Error calculating relevance for {db_id}: {str(e)}")
+            return 0, []
+    
+    def evaluate_content_relevance(self, query, docs_with_scores):
+        """Evaluate content relevance from retrieved documents"""
         if not docs_with_scores:
             return 0
             
-        # Average similarity score
-        avg_score = sum(score for _, score in docs_with_scores) / len(docs_with_scores)
-        return avg_score
-    
-    def select_best_db(self, query: str, metadata: Dict[str, Any]) -> Optional[str]:
-        """Select best vector database for the query"""
-        query_embedding = self.get_embedding(query)
+        # Extract query keywords (simple approach)
+        query_words = set(word.lower() for word in query.split() if len(word) > 3)
         
-        if not vector_stores:
-            return None
+        # Count keyword matches in retrieved documents
+        total_matches = 0
+        for doc, _ in docs_with_scores:
+            doc_content = doc.page_content.lower()
+            for word in query_words:
+                if word in doc_content:
+                    total_matches += 1
+        
+        # Normalize by number of words and documents
+        if not query_words:
+            return 0
             
-        # Calculate similarity scores for each database
-        scores = {}
-        for db_id in vector_stores:
-            # Basic similarity comparison
-            score = self.calculate_similarity(query_embedding, db_id)
+        max_possible_matches = len(query_words) * len(docs_with_scores)
+        if max_possible_matches == 0:
+            return 0
             
-            # Add extra weight if database name matches keywords in query
-            if db_id.lower() in query.lower():
-                score += 0.2
+        content_score = min(1.0, total_matches / max_possible_matches)
+        return content_score
+    
+    def select_best_db(self, query: str) -> tuple:
+        """Select best vector database for the query and return decision details"""
+        decision_details = []
+        
+        # Ensure databases are loaded
+        loaded_dbs = self.load_all_databases()
+        if loaded_dbs:
+            decision_details.append(f"Loaded databases from disk: {', '.join(loaded_dbs)}")
+        
+        available_dbs = list(vector_stores.keys())
+        if not available_dbs:
+            decision_details.append("No vector databases available for querying")
+            return None, [], decision_details
+        else:
+            decision_details.append(f"Found {len(available_dbs)} databases: {', '.join(available_dbs)}")
+        
+        # Calculate scores for each database
+        db_scores = {}
+        db_explanations = {}
+        retrieved_docs_map = {}
+        
+        for db_id in available_dbs:
+            decision_details.append(f"Evaluating database: '{db_id}'")
+            
+            # Calculate embedding-based relevance
+            embedding_score, retrieved_docs = self.calculate_relevance(query, db_id)
+            retrieved_docs_map[db_id] = retrieved_docs
+            
+            if embedding_score == 0:
+                decision_details.append(f"  - No relevant documents retrieved from '{db_id}' or embedding calculation failed")
+                continue
+            
+            # Calculate content-based relevance
+            content_score = self.evaluate_content_relevance(query, retrieved_docs)
+            
+            # Start with base scores
+            total_score = embedding_score * 0.6 + content_score * 0.4
+            explanation = [
+                f"Embedding similarity: {embedding_score:.3f}",
+                f"Content relevance: {content_score:.3f}"
+            ]
+            
+            # Add metadata-based bonuses
+            metadata_bonus = 0
+            meta_explanations = []
+            
+            # Check database name relevance
+            db_terms = set(term.lower() for term in db_id.split('-') if len(term) > 2)
+            query_terms = set(term.lower() for term in query.split() if len(term) > 2)
+            matching_terms = db_terms.intersection(query_terms)
+            
+            if matching_terms:
+                name_bonus = min(0.15, 0.05 * len(matching_terms))
+                metadata_bonus += name_bonus
+                meta_explanations.append(
+                    f"Database name matches: +{name_bonus:.2f} (matched: {', '.join(matching_terms)})"
+                )
+            
+            # Check database metadata
+            if db_id in db_metadata:
+                meta = db_metadata[db_id]
                 
-            # Add extra weight based on database metadata if available
-            if db_id in metadata and "description" in metadata[db_id]:
-                desc = metadata[db_id]["description"]
-                for keyword in query.lower().split():
-                    if keyword in desc.lower():
-                        score += 0.1
-            
-            scores[db_id] = score
-            
-        # Return the database with highest score if it's above threshold
-        if scores:
-            best_db = max(scores.items(), key=lambda x: x[1])
-            if best_db[1] > 0.5:  # Threshold to determine if relevant
-                return best_db[0]
+                # Description relevance
+                if "description" in meta:
+                    desc = meta["description"].lower()
+                    desc_matches = [term for term in query_terms if term in desc]
+                    
+                    if desc_matches:
+                        desc_bonus = min(0.15, 0.05 * len(desc_matches))
+                        metadata_bonus += desc_bonus
+                        meta_explanations.append(
+                            f"Description matches: +{desc_bonus:.2f} (matched: {', '.join(desc_matches)})"
+                        )
                 
-        return None
+                # Consider recency and size if available
+                if "document_count" in meta and meta["document_count"] > 1:
+                    size_bonus = min(0.1, 0.02 * meta["document_count"])
+                    metadata_bonus += size_bonus
+                    meta_explanations.append(f"Database size bonus: +{size_bonus:.2f} ({meta['document_count']} docs)")
+                
+                # Extra weight for larger chunk counts - more comprehensive data
+                if "chunk_count" in meta and meta["chunk_count"] > 5:
+                    chunk_bonus = min(0.2, 0.001 * meta["chunk_count"])
+                    metadata_bonus += chunk_bonus
+                    meta_explanations.append(f"Chunk count bonus: +{chunk_bonus:.2f} ({meta['chunk_count']} chunks)")
+            
+            # Add metadata bonus to total score
+            total_score += metadata_bonus
+            explanation.extend(meta_explanations)
+            explanation.append(f"Final score: {total_score:.3f}")
+            
+            # Record final score and explanation
+            db_scores[db_id] = total_score
+            db_explanations[db_id] = explanation
+            
+            # Log details
+            decision_details.append("  - " + "\n  - ".join(explanation))
+        
+        # Find best database
+        if not db_scores:
+            decision_details.append("No suitable databases found")
+            return None, [], decision_details
+        
+        best_db = max(db_scores.items(), key=lambda x: x[1])
+        best_db_id, best_score = best_db
+        
+        # Log detailed reasoning
+        decision_details.append(f"Best database: '{best_db_id}' with score {best_score:.3f}")
+        
+        # Apply minimum threshold - lower for sparse databases
+        threshold = 0.30  # Lower threshold to catch more cases
+        if best_score < threshold:
+            decision_details.append(f"Best score {best_score:.3f} below threshold {threshold}, no database selected")
+            return None, [], decision_details
+        
+        return best_db_id, retrieved_docs_map.get(best_db_id, []), decision_details
     
     async def process_query(self, query: str) -> dict:
-        """Process user query and select best agent/database"""
+        """Process query by finding the most relevant database or using appropriate fallback"""
         reasoning = []
         
-        # Get available databases
+        # Force load all databases
+        loaded_dbs = self.load_all_databases()
+        if loaded_dbs:
+            reasoning.append(f"Loaded databases from disk: {', '.join(loaded_dbs)}")
+        
+        # Analyze available databases
         available_dbs = list(vector_stores.keys())
-        reasoning.append(f"Found {len(available_dbs)} vector databases: {', '.join(available_dbs) if available_dbs else 'none'}")
+        reasoning.append(f"Available databases: {', '.join(available_dbs) if available_dbs else 'none'}")
         
-        # Check if query is medical-related
-        is_medical = False
-        medical_keywords = ["symptom", "disease", "treatment", "diagnosis", "patient", "doctor", "medicine", 
-                          "hospital", "prescription", "pain", "health", "medical", "clinical", "surgery"]
+        # Select best database
+        best_db_id, retrieved_docs, decision_details = self.select_best_db(query)
+        reasoning.extend(decision_details)
         
-        for keyword in medical_keywords:
-            if keyword in query.lower():
-                is_medical = True
-                break
-                
-        if is_medical:
-            reasoning.append("Query appears to be medical-related; considering medical agent.")
+        # Determine if query is medical (only matters if no relevant DB is found)
+        medical_keywords = ["symptom", "disease", "treatment", "diagnosis", "patient", 
+                           "doctor", "medicine", "hospital", "prescription", "pain", 
+                           "health", "medical", "clinical", "surgery"]
         
-        # Select best database if any
-        best_db = self.select_best_db(query, db_metadata)
+        is_medical = any(keyword in query.lower() for keyword in medical_keywords)
         
-        if best_db:
-            reasoning.append(f"Selected vector database '{best_db}' as most relevant for this query.")
+        # Special case for condition_medicine database with medical queries
+        if is_medical and "condition_medicine" in available_dbs and best_db_id is None:
+            reasoning.append("Query appears medical-related. Trying 'condition_medicine' database specifically.")
+            best_db_id = "condition_medicine"
+        
+        # Process query based on selection
+        if best_db_id:
+            reasoning.append(f"Using database '{best_db_id}' to answer query")
             
-            # Query the vector database
-            vectorstore = vector_stores[best_db]
+            vectorstore = vector_stores[best_db_id]
             qa_chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 4}),
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 5}),
                 return_source_documents=True
             )
             
@@ -177,14 +330,14 @@ class ManagerAgent:
             return {
                 "answer": result["result"],
                 "source_documents": source_docs,
-                "db_used": best_db,
+                "db_used": best_db_id,
                 "reasoning": "\n".join(reasoning)
             }
             
         elif is_medical and medical_agent:
-            reasoning.append("No relevant vector database found. Using medical agent for specialized analysis.")
+            reasoning.append("No relevant database found. Query appears medical-related - using medical agent")
             
-            # Use medical agent without documents
+            # Use medical agent
             analysis = medical_agent.run(query=query)
             
             return {
@@ -195,7 +348,7 @@ class ManagerAgent:
             }
             
         else:
-            reasoning.append("No relevant vector database found. Using general LLM.")
+            reasoning.append("No relevant database found. Using general LLM")
             
             # Fallback to general LLM
             response = self.llm.invoke(query)
@@ -329,7 +482,7 @@ async def create_vector_db(
                 if doc.content_type == "application/pdf":
                     try:
                         loader = process_document_with_ocr(file_path)
-                        docs = loader
+                        docs = [Document(page_content=loader, metadata={"source": str(file_path)})]
                     except Exception as e:
                         raise HTTPException(status_code=400, detail=f"Failed to process PDF: {str(e)}")
                 elif doc.content_type == "text/plain":
@@ -443,7 +596,10 @@ async def manager_route(
         if not manager_agent:
             raise HTTPException(status_code=500, detail="Manager agent not initialized")
         
-        # Load any vector databases from disk that are not already in memory
+        # Let the manager agent handle loading databases
+        # This is now redundant since we've added a load_all_databases() method to the ManagerAgent
+        # But we'll keep it here for extra redundancy
+        loaded_dbs = []
         if os.path.exists("vectorstores"):
             disk_dbs = [d for d in os.listdir("vectorstores") if os.path.isdir(os.path.join("vectorstores", d))]
             for db_id in disk_dbs:
@@ -452,6 +608,7 @@ async def manager_route(
                     try:
                         vectorstore = FAISS.load_local(db_path, embeddings)
                         vector_stores[db_id] = vectorstore
+                        loaded_dbs.append(db_id)
                         
                         # Load metadata if available
                         import json
@@ -459,16 +616,26 @@ async def manager_route(
                         if os.path.exists(metadata_path):
                             with open(metadata_path, "r") as f:
                                 db_metadata[db_id] = json.load(f)
-                    except Exception:
-                        # Skip if can't load this database
+                    except Exception as e:
+                        # Log the error but continue
+                        print(f"Error loading database {db_id}: {str(e)}")
                         continue
         
+        # Log databases that were explicitly loaded in the endpoint
+        if loaded_dbs:
+            print(f"Endpoint loaded databases: {', '.join(loaded_dbs)}")
+            
         # Process the query with the manager agent
         result = await manager_agent.process_query(query)
         
+        # Add some debugging info to help trace issues
+        if not result.get("db_used") and vector_stores:
+            print(f"Warning: No database selected despite {len(vector_stores)} available databases")
+            
         return result
     
     except Exception as e:
+        print(f"Error in manager endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # List available vector databases
