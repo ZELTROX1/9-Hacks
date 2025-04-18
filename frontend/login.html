@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Login</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <script src="https://www.gstatic.com/firebasejs/9.6.11/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.11/firebase-auth-compat.js"></script>
+  
+  <script src="auth.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="auth-container">
+    <div class="auth-box">
+      <h2>Welcome Back!</h2>
+      <form id="loginForm" class="auth-form">
+        <div class="form-group">
+          <input type="email" id="loginEmail" placeholder="Email" required>
+        </div>
+        <div class="form-group">
+          <input type="password" id="loginPassword" placeholder="Password" required>
+        </div>
+        
+        <div id="errorMessage" class="error-message"></div>
+
+        <button type="submit" class="auth-button">Login</button>
+      </form>
+
+      <div class="auth-switch">
+        <p>Don't have an account? <a href="signup.html">Sign up here</a></p>
+        <p><a href="index.html">← Back to Homepage</a></p> <!-- Added Homepage link -->
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById("loginForm").addEventListener("submit", function(e) {
+      e.preventDefault();
+      const email = document.getElementById("loginEmail").value;
+      const password = document.getElementById("loginPassword").value;
+      login(email, password);
+    });
+  </script>
+</body>
+</html>
